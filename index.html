@@ -39,7 +39,7 @@
     /* Sidebar UI */
     .searchbox { display:flex; gap:8px; margin-bottom:10px; }
     .searchbox input {
-      width:100%; padding:6px 8px; border:1px solid #d0d5dc; border-radius:6px;
+      width:100%; padding:6px 8px; border:1px solid #d0d5dc; border-radius:6px;font-size:12px;
     }
     .tiny-dot {
       display:inline-block; width:10px; height:10px; border-radius:50%;
@@ -83,6 +83,7 @@
       <div id="hierarchy" class="muted">Hierarchy will appear here after CSV loads…</div>
     </aside>
     <div id="map"></div>
+    <audio id="dd-audio" preload="none"></audio>
   </div>
 
   <script>
@@ -90,6 +91,9 @@
   const CSV_URL = "Leaflet_Points_All108.csv"; // put next to this HTML
   const DEFAULT_CENTER = [10.9, 78.7];
   const DEFAULT_ZOOM = 6;
+  const overlays    = {};         // for layer control
+
+
 
   // Per-cluster colors (fallback if CSV marker_color blank)
   const clusterColorMap = {
@@ -125,6 +129,7 @@
   const allLayers = L.markerClusterGroup();
   const markerById = new Map(); // id -> marker
 
+
   // ------------------ Utils ------------------
   function pick(...vals) {
     for (const v of vals) if (v !== null && v !== undefined && String(v).trim() !== "") return String(v).trim();
@@ -156,13 +161,30 @@
     return city ? `${base} • ${city}` : base;
   }
   function makePopup(r, title) {
-    const admin = [pick(r.city), pick(r.district), pick(r.state), pick(r.country)].filter(Boolean).join(", ");
-    const cluster = [pick(r.cluster_group), pick(r.subcluster_group)].filter(Boolean).join(" / ");
-    const desc = pick(r.popup_html, "");
-    let html = `<h3 style="margin:0">${title}</h3>`;
-    if (desc) html += `<div>${desc}</div>`;
-    if (admin) html += `<div><b>Location:</b> ${admin}</div>`;
-    if (cluster) html += `<div><b>Cluster:</b> ${cluster}</div>`;
+    const desc = (pick(r.popup_html, "") || "").trim();
+    const audio = (pick(r.audio_url, "") || "").trim();
+
+    // If CSV already provides popup_html, use it as-is.
+    let html = desc ? desc : (() => {
+      const admin = [pick(r.city), pick(r.district), pick(r.state), pick(r.country)]
+        .filter(Boolean).join(", ");
+      const cluster = [pick(r.cluster_group), pick(r.subcluster_group)]
+        .filter(Boolean).join(" / ");
+      let out = `<h3 style="margin:0">${title}</h3>`;
+      if (admin)   out += `<div><b>Location:</b> ${admin}</div>`;
+      if (cluster) out += `<div><b>Cluster:</b> ${cluster}</div>`;
+      return out;
+    })();
+
+    // If an audio URL is present, embed a player in the popup
+    if (audio) {
+      // Simple sanitizer for quotes
+      const safe = audio.replace(/"/g, "&quot;");
+      html += `<div style="margin-top:8px">
+        <audio controls preload="none" src="${safe}" style="width:100%"></audio>
+      </div>`;
+    }
+
     return html;
   }
 
@@ -215,14 +237,15 @@
     Object.keys(groups).sort().forEach(cg => {
       const group = groups[cg];
       const groupWrap = document.createElement("details");
-      groupWrap.open = true;
+      groupWrap.open = false;
       const groupSum = document.createElement("summary");
-      groupSum.innerHTML = `<span class="tiny-dot" style="background:${group.color}"></span>${cg}
+      groupSum.innerHTML = `<span class="tiny-dot" style="background:${group.color}"></span>
+        <strong>${cg}</strong>
         <span class="count-badge">(${Object.values(group.subs).reduce((a,b)=>a+b.length,0)})</span>`;
       groupWrap.appendChild(groupSum);
 
       Object.keys(group.subs).sort().forEach(scg => {
-        const subDiv = document.createElement("div");
+        /*const subDiv = document.createElement("div");
         subDiv.className = "subcluster";
         const subTitle = document.createElement("div");
         subTitle.innerHTML = `<strong>${scg}</strong> <span class="count-badge">(${group.subs[scg].length})</span>`;
@@ -246,7 +269,36 @@
           ul.appendChild(li);
         });
         subDiv.appendChild(ul);
-        groupWrap.appendChild(subDiv);
+        groupWrap.appendChild(subDiv);*/
+        const subDetails = document.createElement("details");
+        subDetails.open = false; // collapsed by default
+
+        const subSum = document.createElement("summary");
+        subSum.innerHTML = `<strong>${scg}</strong> <span class="count-badge">(${group.subs[scg].length})</span>`;
+        subDetails.appendChild(subSum);
+
+        const ul = document.createElement("ul");
+        ul.className = "temple-list";
+        group.subs[scg]
+          .sort((a,b) => String(a.title).localeCompare(String(b.title)))
+          .forEach(row => {
+            const li = document.createElement("li");
+            li.className = "temple-item";
+            const a = document.createElement("a");
+            a.className = "temple-link";
+            const dot = document.createElement("span");
+            dot.className = "tiny-dot";
+            dot.style.background = group.color;
+            a.appendChild(dot);
+            a.appendChild(document.createTextNode(pick(row.title, row.common_name, row.sthalam, row["sthālam"])));
+            a.href = "javascript:void(0)";
+            a.addEventListener("click", () => focusTemple(row));
+            li.appendChild(a);
+            ul.appendChild(li);
+        });
+        subDetails.appendChild(ul);
+        groupWrap.appendChild(subDetails);
+
       });
 
       frag.appendChild(groupWrap);
@@ -278,6 +330,62 @@
 
   // ------------------ Data & Map population ------------------
   let currentRows = [];
+  function buildMarkers(rows) {
+    // clear prior state
+    Object.values(layerGroups).forEach(g => g.clearLayers());
+    allLayers.clearLayers();
+    markerById.clear();
+    rowsWithMk = [];
+
+    let added = 0;
+    rows.forEach((r) => {
+      const lat = getNumberFromKeys(r, LAT_KEYS);
+      const lng = getNumberFromKeys(r, LNG_KEYS);
+      if (isNaN(lat) || isNaN(lng)) return;
+
+      const id    = pick(r.id, r.ID);
+      const color = pickColor(r);
+      const title = pick(r.title, r.common_name, r["sthālam"], r.sthalam, r.popup_title, "Divya Desam");
+      const marker = L.circleMarker([lat, lng], {
+        radius: 7, color, weight: 2, fillColor: color, fillOpacity: 0.9
+      }).bindTooltip(makeTooltip(r))
+        .bindPopup(makePopup(r, title), { maxWidth: 340 });
+
+      // 🎧 Autoplay if audio_url exists in the CSV
+      marker.on('popupopen', () => {
+        const audioUrl = (pick(r.audio_url, "") || "").trim();
+        if (!audioUrl) return;
+
+        const player = document.getElementById('dd-audio');
+        try {
+          if (player.getAttribute('src') !== audioUrl) {
+            player.setAttribute('src', audioUrl);
+          }
+          player.play().catch(() => {
+            // If autoplay is blocked, user can press play on the popup's <audio> controls
+          });
+        } catch (e) {
+          console.warn('Audio play error:', e);
+        }
+      });
+
+
+      const groupName    = pick(r.cluster_group, "Unassigned");
+      ensureClusterGroup(groupName, color); // ensure layer exists, don't add yet
+
+      rowsWithMk.push({ row: r, marker, groupName });
+      if (id) markerById.set(String(id), marker);
+      added++;
+    });
+
+    // Add layer control (once)
+    L.control.layers(null, Object.fromEntries(Object.entries(layerGroups)), { collapsed: false }).addTo(map);
+
+    setStatus(`Parsed ${rows.length} rows; ${added} have coordinates.`);
+  }
+
+  
+
 
   function addRows(rows) {
     let added = 0;
@@ -295,6 +403,24 @@
           radius: 7, color: color, weight: 2, fillColor: color, fillOpacity: 0.9
         }).bindTooltip(tooltip)
           .bindPopup(popupHTML, { maxWidth: 340 });
+        
+        // 🎧 Autoplay if audio_url exists in the CSV
+        marker.on('popupopen', () => {
+          const audioUrl = (pick(r.audio_url, "") || "").trim();
+          if (!audioUrl) return;
+
+          const player = document.getElementById('dd-audio');
+          try {
+            if (player.getAttribute('src') !== audioUrl) {
+              player.setAttribute('src', audioUrl);
+            }
+            player.play().catch(() => {});
+          } catch (e) {
+            console.warn('Audio play error:', e);
+          }
+        });
+
+        
 
         const groupName = pick(r.cluster_group, "Unassigned");
         const clusterLayer = ensureClusterGroup(groupName, color);
@@ -320,6 +446,10 @@
       setStatus("No markers added. Check that your CSV has latitude/longitude values.", true);
     }
   }
+ //code introduced
+ 
+
+
 
   // ------------------ Load CSV (fetch) ------------------
   function loadViaFetch() {
@@ -341,6 +471,8 @@
       }
     });
   }
+  
+
 
   // ------------------ Load CSV (file input fallback) ------------------
   document.getElementById("csvfile").addEventListener("change", (e) => {
@@ -364,11 +496,14 @@
       }
     });
   });
+  
+
 
   // ------------------ Filter logic ------------------
   $filter.addEventListener("input", () => {
     buildHierarchy(currentRows, $filter.value);
   });
+
 
   // Start
   loadViaFetch();
