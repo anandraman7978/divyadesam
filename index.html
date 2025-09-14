@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divya Desam – All 108 (Leaflet)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+
+  <!-- MarkerCluster -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+  <!-- PapaParse -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <style>
+    html, body { height: 100%; margin: 0; font: 14px system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    #topbar {
+      display:flex; gap:12px; align-items:center; padding:8px 12px;
+      background:#f8f9fb; border-bottom:1px solid #e6e8eb;
+    }
+    #status { color:#444; }
+    #app {
+      display:grid; grid-template-columns: 340px 1fr; height: calc(100% - 50px);
+    }
+    #sidebar {
+      border-right:1px solid #e6e8eb; overflow:auto; padding:10px;
+      background:#fff;
+    }
+    #map { height: 100%; }
+    .leaflet-popup-content h3 { margin:0 0 6px; font-size:1.05rem; }
+
+    /* Sidebar UI */
+    .searchbox { display:flex; gap:8px; margin-bottom:10px; }
+    .searchbox input {
+      width:100%; padding:6px 8px; border:1px solid #d0d5dc; border-radius:6px;
+    }
+    .tiny-dot {
+      display:inline-block; width:10px; height:10px; border-radius:50%;
+      margin-right:6px; vertical-align:middle;
+    }
+    details { margin-bottom:6px; }
+    details > summary {
+      cursor:pointer; padding:4px 4px; border-radius:6px;
+      font-weight:600; list-style:none;
+    }
+    details > summary::-webkit-details-marker { display:none; }
+    .subcluster {
+      margin:6px 0 6px 12px; padding:4px 6px; border-left:2px solid #e6e8eb;
+    }
+    .temple-list { margin:4px 0 8px 16px; padding:0; list-style:none; }
+    .temple-item { margin:0; padding:2px 0; }
+    .temple-link {
+      cursor:pointer; color:#1849a9; text-decoration:none; border-radius:4px; padding:2px 0;
+    }
+    .temple-link:hover { text-decoration:underline; }
+    .count-badge {
+      color:#555; font-weight:500; margin-left:6px; font-size:12px;
+    }
+    .muted { color:#6b7280; }
+  </style>
+</head>
+<body>
+  <div id="topbar">
+    <strong>Divya Desam Map</strong>
+    <span id="status">Loading…</span>
+    <label style="margin-left:auto">Or load CSV:
+      <input type="file" id="csvfile" accept=".csv" />
+    </label>
+  </div>
+
+  <div id="app">
+    <aside id="sidebar">
+      <div class="searchbox">
+        <input id="filter" type="search" placeholder="Filter temples or places…" />
+      </div>
+      <div id="hierarchy" class="muted">Hierarchy will appear here after CSV loads…</div>
+    </aside>
+    <div id="map"></div>
+  </div>
+
+  <script>
+  // ------------------ Config ------------------
+  const CSV_URL = "Leaflet_Points_All108.csv"; // put next to this HTML
+  const DEFAULT_CENTER = [10.9, 78.7];
+  const DEFAULT_ZOOM = 6;
+
+  // Per-cluster colors (fallback if CSV marker_color blank)
+  const clusterColorMap = {
+    "Chola Nadu (North)": "#d62728",
+    "Chola Nadu (South)": "#ff7f0e",
+    "Nadu Nadu": "#bcbd22",
+    "Tondai Nadu": "#2ca02c",
+    "Pandiya Nadu": "#1f77b4",
+    "Malai Nadu (Kerala)": "#9467bd",
+    "Vada Nadu (North India)": "#e377c2",
+    "Vada Nadu (South Deccan)": "#17becf",
+    "Vinnulagam (Celestial)": "#7f7f7f",
+    "Unassigned": "#7f7f7f"
+  };
+
+  // ------------------ UI helpers ------------------
+  const $status = document.getElementById("status");
+  const $hier = document.getElementById("hierarchy");
+  const $filter = document.getElementById("filter");
+
+  function setStatus(msg, isError=false) {
+    $status.textContent = msg;
+    $status.style.color = isError ? "#b00020" : "#444";
+  }
+
+  // ------------------ Map init ------------------
+  const map = L.map("map", { zoomControl: true }).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "&copy; OpenStreetMap contributors"
+  }).addTo(map);
+
+  const layerGroups = {}; // { [cluster_group]: L.MarkerClusterGroup }
+  const allLayers = L.markerClusterGroup();
+  const markerById = new Map(); // id -> marker
+
+  // ------------------ Utils ------------------
+  function pick(...vals) {
+    for (const v of vals) if (v !== null && v !== undefined && String(v).trim() !== "") return String(v).trim();
+    return "";
+  }
+  function num(x) {
+    if (x === null || x === undefined) return NaN;
+    return parseFloat(String(x).replace(/[^\d\.\-]/g, "").trim());
+  }
+  function getNumberFromKeys(row, keys) {
+    for (const k of keys) if (k in row && row[k] != null && String(row[k]).trim() !== "") {
+      const v = num(row[k]); if (!isNaN(v)) return v;
+    }
+    return NaN;
+  }
+  const LAT_KEYS = ["lat","Lat","LAT","latitude","Latitude","LATITUDE"];
+  const LNG_KEYS = ["lng","Lng","LNG","lon","Lon","LON","longitude","Longitude","LONGITUDE"];
+
+  function pickColor(row) {
+    const c = (row.marker_color || "").trim();
+    if (c) return c;
+    const group = pick(row.cluster_group, "Unassigned");
+    return clusterColorMap[group] || "#d62728";
+  }
+
+  function makeTooltip(r) {
+    const base = pick(r.title, r.common_name, r["sthālam"], r.sthalam, r.popup_title, "Divya Desam");
+    const city = pick(r.city);
+    return city ? `${base} • ${city}` : base;
+  }
+  function makePopup(r, title) {
+    const admin = [pick(r.city), pick(r.district), pick(r.state), pick(r.country)].filter(Boolean).join(", ");
+    const cluster = [pick(r.cluster_group), pick(r.subcluster_group)].filter(Boolean).join(" / ");
+    const desc = pick(r.popup_html, "");
+    let html = `<h3 style="margin:0">${title}</h3>`;
+    if (desc) html += `<div>${desc}</div>`;
+    if (admin) html += `<div><b>Location:</b> ${admin}</div>`;
+    if (cluster) html += `<div><b>Cluster:</b> ${cluster}</div>`;
+    return html;
+  }
+
+  function ensureClusterGroup(name, color) {
+    if (!layerGroups[name]) {
+      layerGroups[name] = L.markerClusterGroup({
+        iconCreateFunction: (cluster) => {
+          const count = cluster.getChildCount();
+          const div = document.createElement('div');
+          div.style.background = color;
+          div.style.color = '#fff';
+          div.style.borderRadius = '22px';
+          div.style.width = div.style.height = '44px';
+          div.style.display = 'flex';
+          div.style.alignItems = 'center';
+          div.style.justifyContent = 'center';
+          div.style.border = '2px solid #fff';
+          div.style.fontWeight = '600';
+          div.textContent = count;
+          return L.divIcon({ html: div, className: 'custom-cluster', iconSize: [44, 44] });
+        }
+      });
+    }
+    return layerGroups[name];
+  }
+
+  // ------------------ Sidebar (Hierarchy) ------------------
+  function buildHierarchy(rows, filterText="") {
+    const f = filterText.trim().toLowerCase();
+    const groups = {}; // { cluster_group: { color, subs: { subcluster: [rows] } } }
+
+    rows.forEach(r => {
+      // apply filter text on a few key fields
+      const hay = [
+        r.title, r.common_name, r.sthalam, r["sthālam"],
+        r.city, r.district, r.state, r.cluster_group, r.subcluster_group
+      ].map(x => (x||"").toString().toLowerCase()).join(" ");
+      if (f && !hay.includes(f)) return;
+
+      const cg = pick(r.cluster_group, "Unassigned");
+      const scg = pick(r.subcluster_group, "—");
+      const color = pickColor(r);
+      if (!groups[cg]) groups[cg] = { color, subs: {} };
+      if (!groups[cg].subs[scg]) groups[cg].subs[scg] = [];
+      groups[cg].subs[scg].push(r);
+    });
+
+    // Render
+    const frag = document.createDocumentFragment();
+    Object.keys(groups).sort().forEach(cg => {
+      const group = groups[cg];
+      const groupWrap = document.createElement("details");
+      groupWrap.open = true;
+      const groupSum = document.createElement("summary");
+      groupSum.innerHTML = `<span class="tiny-dot" style="background:${group.color}"></span>${cg}
+        <span class="count-badge">(${Object.values(group.subs).reduce((a,b)=>a+b.length,0)})</span>`;
+      groupWrap.appendChild(groupSum);
+
+      Object.keys(group.subs).sort().forEach(scg => {
+        const subDiv = document.createElement("div");
+        subDiv.className = "subcluster";
+        const subTitle = document.createElement("div");
+        subTitle.innerHTML = `<strong>${scg}</strong> <span class="count-badge">(${group.subs[scg].length})</span>`;
+        subDiv.appendChild(subTitle);
+
+        const ul = document.createElement("ul");
+        ul.className = "temple-list";
+        group.subs[scg].sort((a,b) => String(a.title).localeCompare(String(b.title))).forEach(row => {
+          const li = document.createElement("li");
+          li.className = "temple-item";
+          const a = document.createElement("a");
+          a.className = "temple-link";
+          const dot = document.createElement("span");
+          dot.className = "tiny-dot";
+          dot.style.background = group.color;
+          a.appendChild(dot);
+          a.appendChild(document.createTextNode(pick(row.title, row.common_name, row.sthalam, row["sthālam"])));
+          a.href = "javascript:void(0)";
+          a.addEventListener("click", () => focusTemple(row));
+          li.appendChild(a);
+          ul.appendChild(li);
+        });
+        subDiv.appendChild(ul);
+        groupWrap.appendChild(subDiv);
+      });
+
+      frag.appendChild(groupWrap);
+    });
+
+    $hier.innerHTML = "";
+    $hier.appendChild(frag);
+
+    if (!Object.keys(groups).length) {
+      $hier.textContent = "No results match your filter.";
+    }
+  }
+
+  function focusTemple(row) {
+    // prefer numeric id lookup if present
+    const key = pick(row.id, row.ID);
+    const m = markerById.get(String(key)) || null;
+    if (m) {
+      try { map.setView(m.getLatLng(), Math.max(map.getZoom(), 12)); } catch(e){}
+      m.openPopup();
+    } else {
+      // if no marker (no coords), try to fit to all if available
+      if (allLayers.getLayers().length) {
+        try { map.fitBounds(allLayers.getBounds(), { padding: [20,20] }); } catch(e){}
+      }
+      alert("No coordinates for this temple yet — add lat/lng in the CSV to enable zoom.");
+    }
+  }
+
+  // ------------------ Data & Map population ------------------
+  let currentRows = [];
+
+  function addRows(rows) {
+    let added = 0;
+    rows.forEach((r) => {
+      const lat = getNumberFromKeys(r, LAT_KEYS);
+      const lng = getNumberFromKeys(r, LNG_KEYS);
+      const id = pick(r.id, r.ID); // handle ID casing
+      const color = pickColor(r);
+      const title = pick(r.title, r.common_name, r["sthālam"], r.sthalam, r.popup_title, "Divya Desam");
+      const tooltip = makeTooltip(r);
+      const popupHTML = makePopup(r, title);
+
+      if (!isNaN(lat) && !isNaN(lng)) {
+        const marker = L.circleMarker([lat, lng], {
+          radius: 7, color: color, weight: 2, fillColor: color, fillOpacity: 0.9
+        }).bindTooltip(tooltip)
+          .bindPopup(popupHTML, { maxWidth: 340 });
+
+        const groupName = pick(r.cluster_group, "Unassigned");
+        const clusterLayer = ensureClusterGroup(groupName, color);
+        clusterLayer.addLayer(marker);
+        allLayers.addLayer(marker);
+        if (id) markerById.set(String(id), marker);
+        added += 1;
+      }
+    });
+
+    // Add layers & controls
+    const overlays = {};
+    Object.keys(layerGroups).forEach((name) => {
+      if (!map.hasLayer(layerGroups[name])) map.addLayer(layerGroups[name]);
+      overlays[name] = layerGroups[name];
+    });
+    L.control.layers(null, overlays, { collapsed: false }).addTo(map);
+
+    if (added > 0) {
+      try { map.fitBounds(allLayers.getBounds(), { padding: [20,20] }); } catch (e) {}
+      setStatus(`Loaded ${added} markers.`);
+    } else {
+      setStatus("No markers added. Check that your CSV has latitude/longitude values.", true);
+    }
+  }
+
+  // ------------------ Load CSV (fetch) ------------------
+  function loadViaFetch() {
+    setStatus("Loading CSV via fetch…");
+    Papa.parse(CSV_URL + "?v=" + Date.now(), {
+      download: true, header: true, skipEmptyLines: true, dynamicTyping: false,
+      complete: (results) => {
+        if (!results || !results.data) {
+          setStatus("Failed to parse CSV (empty results). Try uploading the file manually.", true);
+          return;
+        }
+        currentRows = results.data;
+        buildHierarchy(currentRows);
+        addRows(currentRows);
+      },
+      error: (err) => {
+        console.error("CSV parse error:", err);
+        setStatus("Fetch failed. Use the file picker (top-right) to load your CSV manually.", true);
+      }
+    });
+  }
+
+  // ------------------ Load CSV (file input fallback) ------------------
+  document.getElementById("csvfile").addEventListener("change", (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setStatus("Parsing uploaded CSV…");
+    Papa.parse(file, {
+      header: true, skipEmptyLines: true, dynamicTyping: false,
+      complete: (results) => {
+        if (!results || !results.data) {
+          setStatus("Uploaded CSV could not be parsed.", true);
+          return;
+        }
+        currentRows = results.data;
+        buildHierarchy(currentRows);
+        addRows(currentRows);
+      },
+      error: (err) => {
+        console.error("CSV parse error:", err);
+        setStatus("Upload parse error. Check the file format.", true);
+      }
+    });
+  });
+
+  // ------------------ Filter logic ------------------
+  $filter.addEventListener("input", () => {
+    buildHierarchy(currentRows, $filter.value);
+  });
+
+  // Start
+  loadViaFetch();
+  </script>
+</body>
+</html>
