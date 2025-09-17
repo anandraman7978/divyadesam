@@ -422,14 +422,14 @@
       // 🎧 Autoplay + 🖼️ image debug on popup open
       marker.on('popupopen', (ev) => {
         // AUDIO autoplay
-        const audioUrl = normalizeMediaUrl(val(r, "audio_url", "audio"), ".mp3");
-        if (audioUrl) {
-          const player = document.getElementById('dd-audio');
-          try {
-            if (player.getAttribute('src') !== audioUrl) player.setAttribute('src', audioUrl);
-            player.play().catch(() => { /* user can press play */ });
-          } catch (e) { console.warn('Audio play error:', e); }
-        }
+        //const audioUrl = normalizeMediaUrl(val(r, "audio_url", "audio"), ".mp3");
+        //if (audioUrl) {
+        //  const player = document.getElementById('dd-audio');
+        //  try {
+        //    if (player.getAttribute('src') !== audioUrl) player.setAttribute('src', audioUrl);
+        //    player.play().catch(() => { /* user can press play */ });
+        //  } catch (e) { console.warn('Audio play error:', e); }
+        //}
         // IMAGE debug
         try {
           const el = ev.popup.getElement && ev.popup.getElement();
@@ -482,14 +482,14 @@
       // 🎧 Autoplay + 🖼️ image debug on popup open
       marker.on('popupopen', (ev) => {
         // AUDIO
-        const audioUrl = normalizeMediaUrl(val(r, "audio_url", "audio"), ".mp3");
-        if (audioUrl) {
-          const player = document.getElementById('dd-audio');
-          try {
-            if (player.getAttribute('src') !== audioUrl) player.setAttribute('src', audioUrl);
-            player.play().catch(() => {});
-          } catch (e) { console.warn('Audio play error:', e); }
-        }
+        //const audioUrl = normalizeMediaUrl(val(r, "audio_url", "audio"), ".mp3");
+        //if (audioUrl) {
+        //  const player = document.getElementById('dd-audio');
+        //  try {
+        //    if (player.getAttribute('src') !== audioUrl) player.setAttribute('src', audioUrl);
+        //    player.play().catch(() => {});
+        //  } catch (e) { console.warn('Audio play error:', e); }
+        //}
         // IMAGE
         try {
           const el = ev.popup.getElement && ev.popup.getElement();
