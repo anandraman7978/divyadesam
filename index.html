@@ -20,54 +20,72 @@
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
   <style>
+    /* Base */
     html, body { height: 100%; margin: 0; font: 14px system-ui, -apple-system, Segoe UI, Roboto, Arial; }
     #topbar {
       display:flex; gap:12px; align-items:center; padding:8px 12px;
       background:#f8f9fb; border-bottom:1px solid #e6e8eb;
     }
     #status { color:#444; }
-    #app {
-      display:grid; grid-template-columns: 340px 1fr; height: calc(100% - 50px);
-    }
-    #sidebar {
-      border-right:1px solid #e6e8eb; overflow:auto; padding:10px;
-      background:#fff;
-    }
+    #app { display:grid; grid-template-columns: 340px 1fr; height: calc(100% - 50px); }
+    #sidebar { border-right:1px solid #e6e8eb; overflow:auto; padding:10px; background:#fff; }
     #map { height: 100%; }
+    .leaflet-popup-content { max-width: min(90vw, 360px); }
     .leaflet-popup-content h3 { margin:0 0 6px; font-size:1.05rem; }
 
+    /* Topbar buttons */
+    #sidebarToggle {
+      border:1px solid #d0d5dc; background:#fff; border-radius:8px; padding:6px 10px;
+      cursor:pointer; font-size:14px;
+    }
+    #sidebarToggle:active { transform: translateY(1px); }
+
+    /* Sidebar close (mobile) */
+    .close-btn {
+      display:none; position:sticky; top:0; right:0; margin-left:auto;
+      border:none; background:#fff; font-size:18px; padding:6px 8px; cursor:pointer;
+      border-radius:6px; box-shadow:0 0 0 1px #e6e8eb inset;
+    }
+
     /* Sidebar UI */
-    .searchbox { display:flex; gap:8px; margin-bottom:10px; }
+    .searchbox { display:flex; gap:8px; margin-bottom:10px; position:sticky; top:0; background:#fff; padding-top:6px; }
     .searchbox input {
-      width:100%; padding:6px 8px; border:1px solid #d0d5dc; border-radius:6px;font-size:12px;
+      width:100%; padding:10px 12px; border:1px solid #d0d5dc; border-radius:8px; font-size:16px;
     }
-    .tiny-dot {
-      display:inline-block; width:10px; height:10px; border-radius:50%;
-      margin-right:6px; vertical-align:middle;
-    }
+    .tiny-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; }
     details { margin-bottom:6px; }
-    details > summary {
-      cursor:pointer; padding:4px 4px; border-radius:6px;
-      font-weight:600; list-style:none;
-    }
+    details > summary { cursor:pointer; padding:6px 4px; border-radius:6px; font-weight:600; list-style:none; }
     details > summary::-webkit-details-marker { display:none; }
-    .subcluster {
-      margin:6px 0 6px 12px; padding:4px 6px; border-left:2px solid #e6e8eb;
-    }
-    .temple-list { margin:4px 0 8px 16px; padding:0; list-style:none; }
-    .temple-item { margin:0; padding:2px 0; }
-    .temple-link {
-      cursor:pointer; color:#1849a9; text-decoration:none; border-radius:4px; padding:2px 0;
-    }
+    .subcluster { margin:6px 0 6px 12px; padding:4px 6px; border-left:2px solid #e6e8eb; }
+    .temple-list { margin:4px 0 80px 16px; padding:0; list-style:none; }
+    .temple-item { margin:0; padding:6px 0; }
+    .temple-link { cursor:pointer; color:#1849a9; text-decoration:none; border-radius:6px; padding:4px 0; display:inline-block; }
     .temple-link:hover { text-decoration:underline; }
-    .count-badge {
-      color:#555; font-weight:500; margin-left:6px; font-size:12px;
-    }
+    .temple-link:active { background:#eef3ff; }
+    .count-badge { color:#555; font-weight:500; margin-left:6px; font-size:12px; }
     .muted { color:#6b7280; }
+
+    /* Mobile drawer */
+    @media (max-width: 900px) {
+      #app { display:block; height: calc(100dvh - 50px); }
+      #map { height: calc(100dvh - 50px); }
+      #sidebar {
+        position: fixed; z-index: 1000; top: 50px; left: 0; right: 0;
+        height: calc(100dvh - 50px);
+        transform: translateX(-100%);
+        transition: transform 200ms ease;
+        border-right: none; border-top: 1px solid #e6e8eb;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+      }
+      #sidebar.open { transform: translateX(0); }
+      .close-btn { display:block; }
+      .custom-cluster { transform: scale(1.05); }
+    }
   </style>
 </head>
 <body>
   <div id="topbar">
+    <button id="sidebarToggle" aria-label="Open filters" title="Open filters">☰ Filter</button>
     <strong>Divya Desam Map</strong>
     <span id="status">Loading…</span>
     <label style="margin-left:auto">Or load CSV:
@@ -77,12 +95,14 @@
 
   <div id="app">
     <aside id="sidebar">
+      <button id="sidebarClose" aria-label="Close filters" title="Close" class="close-btn">✕</button>
       <div class="searchbox">
         <input id="filter" type="search" placeholder="Filter temples or places…" />
       </div>
       <div id="hierarchy" class="muted">Hierarchy will appear here after CSV loads…</div>
     </aside>
     <div id="map"></div>
+    <!-- Global audio player reused for autoplay -->
     <audio id="dd-audio" preload="none"></audio>
   </div>
 
@@ -91,9 +111,6 @@
   const CSV_URL = "Leaflet_Points_All108.csv"; // put next to this HTML
   const DEFAULT_CENTER = [10.9, 78.7];
   const DEFAULT_ZOOM = 6;
-  const overlays    = {};         // for layer control
-
-
 
   // Per-cluster colors (fallback if CSV marker_color blank)
   const clusterColorMap = {
@@ -113,10 +130,30 @@
   const $status = document.getElementById("status");
   const $hier = document.getElementById("hierarchy");
   const $filter = document.getElementById("filter");
+  const $sidebar = document.getElementById("sidebar");
+  const $sidebarToggle = document.getElementById("sidebarToggle");
+  const $sidebarClose  = document.getElementById("sidebarClose");
 
   function setStatus(msg, isError=false) {
     $status.textContent = msg;
     $status.style.color = isError ? "#b00020" : "#444";
+  }
+
+  function openSidebar() {
+    $sidebar.classList.add("open");
+    try { map.dragging.disable(); map.scrollWheelZoom.disable(); } catch (_){}
+    map.once("click", closeSidebar);
+    try { map.invalidateSize(); } catch (_){}
+  }
+  function closeSidebar() {
+    $sidebar.classList.remove("open");
+    try { map.dragging.enable(); map.scrollWheelZoom.enable(); } catch (_){}
+    try { map.invalidateSize(); } catch (_){}
+  }
+  $sidebarToggle.addEventListener("click", openSidebar);
+  $sidebarClose.addEventListener("click", closeSidebar);
+  function maybeCloseSidebarForMobile() {
+    if (window.matchMedia("(max-width: 900px)").matches) closeSidebar();
   }
 
   // ------------------ Map init ------------------
@@ -128,7 +165,6 @@
   const layerGroups = {}; // { [cluster_group]: L.MarkerClusterGroup }
   const allLayers = L.markerClusterGroup();
   const markerById = new Map(); // id -> marker
-
 
   // ------------------ Utils ------------------
   function pick(...vals) {
@@ -155,17 +191,69 @@
     return clusterColorMap[group] || "#d62728";
   }
 
+  // Flexible getter for CSV fields (survives header quirks)
+  function val(row, ...names) {
+    for (const name of names) {
+      const variants = [
+        name,
+        String(name).trim(),
+        String(name).toLowerCase(),
+        String(name).trim().toLowerCase(),
+        String(name).replace(/\s+/g, ""),
+        String(name).trim().replace(/\s+/g, ""),
+        String(name).replace(/\s+/g, "_"),
+        String(name).trim().replace(/\s+/g, "_"),
+      ];
+      for (const v of variants) {
+        for (const key of Object.keys(row)) {
+          const kk = key.replace(/\r$/, ""); // strip stray CR from CSV headers
+          if (kk === v) {
+            const x = row[key];
+            if (x != null && String(x).trim() !== "") return String(x);
+          }
+        }
+      }
+    }
+    return "";
+  }
+
+  // Safe media URL (makes relative, avoids double-encoding)
+  function normalizeMediaUrl(raw, defaultExt = "") {
+    let url = (raw || "").trim();
+    if (!url) return "";
+    if (url.startsWith("/")) url = url.slice(1); // relative path works locally & GH Pages
+    url = url.split("/").map(seg => {
+      try { seg = decodeURIComponent(seg); } catch (_) {}
+      return encodeURIComponent(seg);
+    }).join("/");
+    if (defaultExt && !/\.[a-z0-9]+(\?|#|$)/i.test(url)) {
+      url += defaultExt.startsWith(".") ? defaultExt : ("." + defaultExt);
+    }
+    return url;
+  }
+
+  function markerRadius() {
+    return window.matchMedia("(max-width: 900px)").matches ? 9 : 7;
+  }
+
   function makeTooltip(r) {
     const base = pick(r.title, r.common_name, r["sthālam"], r.sthalam, r.popup_title, "Divya Desam");
     const city = pick(r.city);
     return city ? `${base} • ${city}` : base;
   }
-  function makePopup(r, title) {
-    const desc = (pick(r.popup_html, "") || "").trim();
-    const audio = (pick(r.audio_url, "") || "").trim();
 
-    // If CSV already provides popup_html, use it as-is.
-    let html = desc ? desc : (() => {
+  function makePopup(r, title) {
+    const rawDesc  = (pick(r.popup_html, "") || "").trim();
+    const rawAudio = (val(r, "audio_url", "audio") || "").trim();
+    const rawImg   = (val(r, "image_url", "image", "photo", "img") || "").trim();
+
+    const audio = normalizeMediaUrl(rawAudio, ".mp3"); // keeps .m4a as-is if present
+    const img   = normalizeMediaUrl(rawImg);
+
+    console.log("[popup media]", { title, rawImg, img, rawAudio, audio });
+
+    // Base HTML (use popup_html verbatim if present to avoid duplicate text)
+    let html = rawDesc ? rawDesc : (() => {
       const admin = [pick(r.city), pick(r.district), pick(r.state), pick(r.country)]
         .filter(Boolean).join(", ");
       const cluster = [pick(r.cluster_group), pick(r.subcluster_group)]
@@ -176,12 +264,20 @@
       return out;
     })();
 
-    // If an audio URL is present, embed a player in the popup
+    // Image first (if provided)
+    if (img) {
+      const safeImg = img.replace(/"/g, "&quot;");
+      html = `<div style="margin-bottom:8px">
+        <img class="dd-popup-img" src="${safeImg}" alt="${title}" loading="eager"
+             style="max-width:100%;height:auto;border-radius:6px;display:block;" />
+      </div>` + html;
+    }
+
+    // Audio player (if provided)
     if (audio) {
-      // Simple sanitizer for quotes
-      const safe = audio.replace(/"/g, "&quot;");
+      const safeAudio = audio.replace(/"/g, "&quot;");
       html += `<div style="margin-top:8px">
-        <audio controls preload="none" src="${safe}" style="width:100%"></audio>
+        <audio controls preload="none" src="${safeAudio}" style="width:100%"></audio>
       </div>`;
     }
 
@@ -245,34 +341,8 @@
       groupWrap.appendChild(groupSum);
 
       Object.keys(group.subs).sort().forEach(scg => {
-        /*const subDiv = document.createElement("div");
-        subDiv.className = "subcluster";
-        const subTitle = document.createElement("div");
-        subTitle.innerHTML = `<strong>${scg}</strong> <span class="count-badge">(${group.subs[scg].length})</span>`;
-        subDiv.appendChild(subTitle);
-
-        const ul = document.createElement("ul");
-        ul.className = "temple-list";
-        group.subs[scg].sort((a,b) => String(a.title).localeCompare(String(b.title))).forEach(row => {
-          const li = document.createElement("li");
-          li.className = "temple-item";
-          const a = document.createElement("a");
-          a.className = "temple-link";
-          const dot = document.createElement("span");
-          dot.className = "tiny-dot";
-          dot.style.background = group.color;
-          a.appendChild(dot);
-          a.appendChild(document.createTextNode(pick(row.title, row.common_name, row.sthalam, row["sthālam"])));
-          a.href = "javascript:void(0)";
-          a.addEventListener("click", () => focusTemple(row));
-          li.appendChild(a);
-          ul.appendChild(li);
-        });
-        subDiv.appendChild(ul);
-        groupWrap.appendChild(subDiv);*/
         const subDetails = document.createElement("details");
         subDetails.open = false; // collapsed by default
-
         const subSum = document.createElement("summary");
         subSum.innerHTML = `<strong>${scg}</strong> <span class="count-badge">(${group.subs[scg].length})</span>`;
         subDetails.appendChild(subSum);
@@ -298,7 +368,6 @@
         });
         subDetails.appendChild(ul);
         groupWrap.appendChild(subDetails);
-
       });
 
       frag.appendChild(groupWrap);
@@ -313,14 +382,13 @@
   }
 
   function focusTemple(row) {
-    // prefer numeric id lookup if present
     const key = pick(row.id, row.ID);
     const m = markerById.get(String(key)) || null;
     if (m) {
       try { map.setView(m.getLatLng(), Math.max(map.getZoom(), 12)); } catch(e){}
       m.openPopup();
+      maybeCloseSidebarForMobile();
     } else {
-      // if no marker (no coords), try to fit to all if available
       if (allLayers.getLayers().length) {
         try { map.fitBounds(allLayers.getBounds(), { padding: [20,20] }); } catch(e){}
       }
@@ -335,7 +403,6 @@
     Object.values(layerGroups).forEach(g => g.clearLayers());
     allLayers.clearLayers();
     markerById.clear();
-    rowsWithMk = [];
 
     let added = 0;
     rows.forEach((r) => {
@@ -346,89 +413,110 @@
       const id    = pick(r.id, r.ID);
       const color = pickColor(r);
       const title = pick(r.title, r.common_name, r["sthālam"], r.sthalam, r.popup_title, "Divya Desam");
+
       const marker = L.circleMarker([lat, lng], {
-        radius: 7, color, weight: 2, fillColor: color, fillOpacity: 0.9
+        radius: markerRadius(), color, weight: 2, fillColor: color, fillOpacity: 0.9
       }).bindTooltip(makeTooltip(r))
         .bindPopup(makePopup(r, title), { maxWidth: 340 });
 
-      // 🎧 Autoplay if audio_url exists in the CSV
-      marker.on('popupopen', () => {
-        const audioUrl = (pick(r.audio_url, "") || "").trim();
-        if (!audioUrl) return;
-
-        const player = document.getElementById('dd-audio');
-        try {
-          if (player.getAttribute('src') !== audioUrl) {
-            player.setAttribute('src', audioUrl);
-          }
-          player.play().catch(() => {
-            // If autoplay is blocked, user can press play on the popup's <audio> controls
-          });
-        } catch (e) {
-          console.warn('Audio play error:', e);
+      // 🎧 Autoplay + 🖼️ image debug on popup open
+      marker.on('popupopen', (ev) => {
+        // AUDIO autoplay
+        const audioUrl = normalizeMediaUrl(val(r, "audio_url", "audio"), ".mp3");
+        if (audioUrl) {
+          const player = document.getElementById('dd-audio');
+          try {
+            if (player.getAttribute('src') !== audioUrl) player.setAttribute('src', audioUrl);
+            player.play().catch(() => { /* user can press play */ });
+          } catch (e) { console.warn('Audio play error:', e); }
         }
+        // IMAGE debug
+        try {
+          const el = ev.popup.getElement && ev.popup.getElement();
+          const img = el && el.querySelector && el.querySelector("img.dd-popup-img");
+          if (img) {
+            const srcShown = img.getAttribute("src");
+            console.log("[img attempt]", srcShown);
+            img.addEventListener("load", () => {
+              console.log("[img loaded]", srcShown);
+              setStatus(`Loaded image: ${srcShown}`);
+            }, { once: true });
+            img.addEventListener("error", () => {
+              console.warn("[img error]", srcShown);
+              setStatus(`Image not found: ${srcShown}`, true);
+            }, { once: true });
+          } else {
+            console.log("[img missing] No image tag for this row");
+          }
+        } catch (e) { console.warn("Image hook error:", e); }
       });
 
-
       const groupName    = pick(r.cluster_group, "Unassigned");
-      ensureClusterGroup(groupName, color); // ensure layer exists, don't add yet
+      ensureClusterGroup(groupName, color); // ensure layer exists, add later
 
-      rowsWithMk.push({ row: r, marker, groupName });
       if (id) markerById.set(String(id), marker);
-      added++;
+      // stash to add in addRows() flow; or add here if you prefer single pass
     });
 
-    // Add layer control (once)
-    L.control.layers(null, Object.fromEntries(Object.entries(layerGroups)), { collapsed: false }).addTo(map);
-
-    setStatus(`Parsed ${rows.length} rows; ${added} have coordinates.`);
+    setStatus(`Parsed ${rows.length} rows.`);
   }
-
-  
-
 
   function addRows(rows) {
     let added = 0;
     rows.forEach((r) => {
       const lat = getNumberFromKeys(r, LAT_KEYS);
       const lng = getNumberFromKeys(r, LNG_KEYS);
-      const id = pick(r.id, r.ID); // handle ID casing
+      if (isNaN(lat) || isNaN(lng)) return;
+
+      const id = pick(r.id, r.ID);
       const color = pickColor(r);
       const title = pick(r.title, r.common_name, r["sthālam"], r.sthalam, r.popup_title, "Divya Desam");
       const tooltip = makeTooltip(r);
       const popupHTML = makePopup(r, title);
 
-      if (!isNaN(lat) && !isNaN(lng)) {
-        const marker = L.circleMarker([lat, lng], {
-          radius: 7, color: color, weight: 2, fillColor: color, fillOpacity: 0.9
-        }).bindTooltip(tooltip)
-          .bindPopup(popupHTML, { maxWidth: 340 });
-        
-        // 🎧 Autoplay if audio_url exists in the CSV
-        marker.on('popupopen', () => {
-          const audioUrl = (pick(r.audio_url, "") || "").trim();
-          if (!audioUrl) return;
+      const marker = L.circleMarker([lat, lng], {
+        radius: markerRadius(), color, weight: 2, fillColor: color, fillOpacity: 0.9
+      }).bindTooltip(tooltip)
+        .bindPopup(popupHTML, { maxWidth: 340 });
 
+      // 🎧 Autoplay + 🖼️ image debug on popup open
+      marker.on('popupopen', (ev) => {
+        // AUDIO
+        const audioUrl = normalizeMediaUrl(val(r, "audio_url", "audio"), ".mp3");
+        if (audioUrl) {
           const player = document.getElementById('dd-audio');
           try {
-            if (player.getAttribute('src') !== audioUrl) {
-              player.setAttribute('src', audioUrl);
-            }
+            if (player.getAttribute('src') !== audioUrl) player.setAttribute('src', audioUrl);
             player.play().catch(() => {});
-          } catch (e) {
-            console.warn('Audio play error:', e);
+          } catch (e) { console.warn('Audio play error:', e); }
+        }
+        // IMAGE
+        try {
+          const el = ev.popup.getElement && ev.popup.getElement();
+          const img = el && el.querySelector && el.querySelector("img.dd-popup-img");
+          if (img) {
+            const srcShown = img.getAttribute("src");
+            console.log("[img attempt]", srcShown);
+            img.addEventListener("load", () => {
+              console.log("[img loaded]", srcShown);
+              setStatus(`Loaded image: ${srcShown}`);
+            }, { once: true });
+            img.addEventListener("error", () => {
+              console.warn("[img error]", srcShown);
+              setStatus(`Image not found: ${srcShown}`, true);
+            }, { once: true });
+          } else {
+            console.log("[img missing] No image tag for this row");
           }
-        });
+        } catch (e) { console.warn("Image hook error:", e); }
+      });
 
-        
-
-        const groupName = pick(r.cluster_group, "Unassigned");
-        const clusterLayer = ensureClusterGroup(groupName, color);
-        clusterLayer.addLayer(marker);
-        allLayers.addLayer(marker);
-        if (id) markerById.set(String(id), marker);
-        added += 1;
-      }
+      const groupName = pick(r.cluster_group, "Unassigned");
+      const clusterLayer = ensureClusterGroup(groupName, color);
+      clusterLayer.addLayer(marker);
+      allLayers.addLayer(marker);
+      if (id) markerById.set(String(id), marker);
+      added += 1;
     });
 
     // Add layers & controls
@@ -441,15 +529,12 @@
 
     if (added > 0) {
       try { map.fitBounds(allLayers.getBounds(), { padding: [20,20] }); } catch (e) {}
+      try { map.invalidateSize(); } catch (e) {}
       setStatus(`Loaded ${added} markers.`);
     } else {
       setStatus("No markers added. Check that your CSV has latitude/longitude values.", true);
     }
   }
- //code introduced
- 
-
-
 
   // ------------------ Load CSV (fetch) ------------------
   function loadViaFetch() {
@@ -463,6 +548,7 @@
         }
         currentRows = results.data;
         buildHierarchy(currentRows);
+        // buildMarkers(currentRows);  // optional first pass if you want
         addRows(currentRows);
       },
       error: (err) => {
@@ -471,8 +557,6 @@
       }
     });
   }
-  
-
 
   // ------------------ Load CSV (file input fallback) ------------------
   document.getElementById("csvfile").addEventListener("change", (e) => {
@@ -488,6 +572,7 @@
         }
         currentRows = results.data;
         buildHierarchy(currentRows);
+        // buildMarkers(currentRows);  // optional
         addRows(currentRows);
       },
       error: (err) => {
@@ -496,14 +581,15 @@
       }
     });
   });
-  
-
 
   // ------------------ Filter logic ------------------
   $filter.addEventListener("input", () => {
     buildHierarchy(currentRows, $filter.value);
   });
 
+  // Resize/Orientation fixes for mobile
+  window.addEventListener("orientationchange", () => setTimeout(() => map.invalidateSize(), 250));
+  window.addEventListener("resize", () => setTimeout(() => map.invalidateSize(), 250));
 
   // Start
   loadViaFetch();
