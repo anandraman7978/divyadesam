@@ -27,8 +27,8 @@
       background:#f8f9fb; border-bottom:1px solid #e6e8eb;
     }
     #status { color:#444; }
-    #app { display:grid; grid-template-columns: 340px 1fr; height: calc(100% - 50px); }
-    #sidebar { border-right:1px solid #e6e8eb; overflow:auto; padding:10px; background:#fff; }
+    #app { display:grid; grid-template-columns: 340px 1fr; height: calc(100% - 50px); transition: grid-template-columns 200ms ease; }
+    #sidebar { border-right:1px solid #e6e8eb; overflow:auto; padding:10px; background:#fff; transition: transform 200ms ease, width 200ms ease; }
     #map { height: 100%; }
     .leaflet-popup-content { max-width: min(90vw, 360px); }
     .leaflet-popup-content h3 { margin:0 0 6px; font-size:1.05rem; }
@@ -73,13 +73,23 @@
         position: fixed; z-index: 1000; top: 50px; left: 0; right: 0;
         height: calc(100dvh - 50px);
         transform: translateX(-100%);
-        transition: transform 200ms ease;
         border-right: none; border-top: 1px solid #e6e8eb;
         box-shadow: 0 10px 30px rgba(0,0,0,0.15);
       }
       #sidebar.open { transform: translateX(0); }
       .close-btn { display:block; }
       .custom-cluster { transform: scale(1.05); }
+    }
+
+    /* Cluster toggle control (top-right) */
+    .leaflet-control-cluster-toggle {
+      background:#fff; border:1px solid #d0d5dc; border-radius:10px;
+      padding:6px 10px; font: 14px system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      cursor:pointer; box-shadow: 0 1px 2px rgba(0,0,0,.06);
+    }
+    .leaflet-control-cluster-toggle:active { transform: translateY(1px); }
+    @media (max-width: 900px) {
+      .leaflet-control-cluster-toggle { padding:10px 12px; font-size:16px; }
     }
   </style>
 </head>
@@ -102,7 +112,7 @@
       <div id="hierarchy" class="muted">Hierarchy will appear here after CSV loads…</div>
     </aside>
     <div id="map"></div>
-    <!-- Global audio player reused for autoplay -->
+    <!-- Global audio player (no autoplay) -->
     <audio id="dd-audio" preload="none"></audio>
   </div>
 
@@ -162,9 +172,21 @@
     attribution: "&copy; OpenStreetMap contributors"
   }).addTo(map);
 
-  const layerGroups = {}; // { [cluster_group]: L.MarkerClusterGroup }
+  // Groups
+  const layerGroups = {};                 // clustered groups: { [cluster_group]: L.MarkerClusterGroup }
   const allLayers = L.markerClusterGroup();
-  const markerById = new Map(); // id -> marker
+  const markerById = new Map();
+
+  // Cluster mode state + plain groups
+  let clusterMode = true;                 // true = clustered (default), false = unclustered
+  const clusteredGroups = layerGroups;    // alias for clarity
+  const plainGroups = {};                 // { [cluster_group]: L.LayerGroup }
+  const allPlain = L.layerGroup();        // combined unclustered
+
+  function ensurePlainGroup(name) {
+    if (!plainGroups[name]) plainGroups[name] = L.layerGroup();
+    return plainGroups[name];
+  }
 
   // ------------------ Utils ------------------
   function pick(...vals) {
@@ -217,11 +239,11 @@
     return "";
   }
 
-  // Safe media URL (makes relative, avoids double-encoding)
+  // Safe media URL
   function normalizeMediaUrl(raw, defaultExt = "") {
     let url = (raw || "").trim();
     if (!url) return "";
-    if (url.startsWith("/")) url = url.slice(1); // relative path works locally & GH Pages
+    if (url.startsWith("/")) url = url.slice(1);
     url = url.split("/").map(seg => {
       try { seg = decodeURIComponent(seg); } catch (_) {}
       return encodeURIComponent(seg);
@@ -247,12 +269,10 @@
     const rawAudio = (val(r, "audio_url", "audio") || "").trim();
     const rawImg   = (val(r, "image_url", "image", "photo", "img") || "").trim();
 
-    const audio = normalizeMediaUrl(rawAudio, ".mp3"); // keeps .m4a as-is if present
+    const audio = normalizeMediaUrl(rawAudio, ".mp3"); // keeps .m4a if present
     const img   = normalizeMediaUrl(rawImg);
 
-    console.log("[popup media]", { title, rawImg, img, rawAudio, audio });
-
-    // Base HTML (use popup_html verbatim if present to avoid duplicate text)
+    // Base HTML (use popup_html verbatim if present)
     let html = rawDesc ? rawDesc : (() => {
       const admin = [pick(r.city), pick(r.district), pick(r.state), pick(r.country)]
         .filter(Boolean).join(", ");
@@ -264,7 +284,7 @@
       return out;
     })();
 
-    // Image first (if provided)
+    // Image first
     if (img) {
       const safeImg = img.replace(/"/g, "&quot;");
       html = `<div style="margin-bottom:8px">
@@ -273,7 +293,7 @@
       </div>` + html;
     }
 
-    // Audio player (if provided)
+    // Audio controls (no autoplay)
     if (audio) {
       const safeAudio = audio.replace(/"/g, "&quot;");
       html += `<div style="margin-top:8px">
@@ -313,7 +333,6 @@
     const groups = {}; // { cluster_group: { color, subs: { subcluster: [rows] } } }
 
     rows.forEach(r => {
-      // apply filter text on a few key fields
       const hay = [
         r.title, r.common_name, r.sthalam, r["sthālam"],
         r.city, r.district, r.state, r.cluster_group, r.subcluster_group
@@ -342,7 +361,7 @@
 
       Object.keys(group.subs).sort().forEach(scg => {
         const subDetails = document.createElement("details");
-        subDetails.open = false; // collapsed by default
+        subDetails.open = false;
         const subSum = document.createElement("summary");
         subSum.innerHTML = `<strong>${scg}</strong> <span class="count-badge">(${group.subs[scg].length})</span>`;
         subDetails.appendChild(subSum);
@@ -389,80 +408,78 @@
       m.openPopup();
       maybeCloseSidebarForMobile();
     } else {
-      if (allLayers.getLayers().length) {
-        try { map.fitBounds(allLayers.getBounds(), { padding: [20,20] }); } catch(e){}
+      if (allPlain.getLayers().length) {
+        try { map.fitBounds(allPlain.getBounds(), { padding: [20,20] }); } catch(e){}
       }
       alert("No coordinates for this temple yet — add lat/lng in the CSV to enable zoom.");
     }
   }
 
-  // ------------------ Data & Map population ------------------
-  let currentRows = [];
-  function buildMarkers(rows) {
-    // clear prior state
-    Object.values(layerGroups).forEach(g => g.clearLayers());
-    allLayers.clearLayers();
-    markerById.clear();
+  // ------------------ Cluster toggle helpers ------------------
+  let layersControl = null;
 
-    let added = 0;
-    rows.forEach((r) => {
-      const lat = getNumberFromKeys(r, LAT_KEYS);
-      const lng = getNumberFromKeys(r, LNG_KEYS);
-      if (isNaN(lat) || isNaN(lng)) return;
-
-      const id    = pick(r.id, r.ID);
-      const color = pickColor(r);
-      const title = pick(r.title, r.common_name, r["sthālam"], r.sthalam, r.popup_title, "Divya Desam");
-
-      const marker = L.circleMarker([lat, lng], {
-        radius: markerRadius(), color, weight: 2, fillColor: color, fillOpacity: 0.9
-      }).bindTooltip(makeTooltip(r))
-        .bindPopup(makePopup(r, title), { maxWidth: 340 });
-
-      // 🎧 Autoplay + 🖼️ image debug on popup open
-      marker.on('popupopen', (ev) => {
-        // AUDIO autoplay
-        //const audioUrl = normalizeMediaUrl(val(r, "audio_url", "audio"), ".mp3");
-        //if (audioUrl) {
-        //  const player = document.getElementById('dd-audio');
-        //  try {
-        //    if (player.getAttribute('src') !== audioUrl) player.setAttribute('src', audioUrl);
-        //    player.play().catch(() => { /* user can press play */ });
-        //  } catch (e) { console.warn('Audio play error:', e); }
-        //}
-        // IMAGE debug
-        try {
-          const el = ev.popup.getElement && ev.popup.getElement();
-          const img = el && el.querySelector && el.querySelector("img.dd-popup-img");
-          if (img) {
-            const srcShown = img.getAttribute("src");
-            console.log("[img attempt]", srcShown);
-            img.addEventListener("load", () => {
-              console.log("[img loaded]", srcShown);
-              setStatus(`Loaded image: ${srcShown}`);
-            }, { once: true });
-            img.addEventListener("error", () => {
-              console.warn("[img error]", srcShown);
-              setStatus(`Image not found: ${srcShown}`, true);
-            }, { once: true });
-          } else {
-            console.log("[img missing] No image tag for this row");
-          }
-        } catch (e) { console.warn("Image hook error:", e); }
-      });
-
-      const groupName    = pick(r.cluster_group, "Unassigned");
-      ensureClusterGroup(groupName, color); // ensure layer exists, add later
-
-      if (id) markerById.set(String(id), marker);
-      // stash to add in addRows() flow; or add here if you prefer single pass
-    });
-
-    setStatus(`Parsed ${rows.length} rows.`);
+  function currentOverlayMap() {
+    const overlays = {};
+    const src = clusterMode ? clusteredGroups : plainGroups;
+    Object.keys(src).forEach((name) => { overlays[name] = src[name]; });
+    return overlays;
   }
 
+  function applyClusterMode() {
+    // remove all first
+    Object.values(clusteredGroups).forEach(g => { if (map.hasLayer(g)) map.removeLayer(g); });
+    Object.values(plainGroups).forEach(g => { if (map.hasLayer(g)) map.removeLayer(g); });
+
+    // add the active mode groups
+    const src = clusterMode ? clusteredGroups : plainGroups;
+    Object.keys(src).forEach((name) => {
+      if (!map.hasLayer(src[name])) map.addLayer(src[name]);
+    });
+
+    // rebuild layers control
+    if (layersControl) { try { map.removeControl(layersControl); } catch(_) {} layersControl = null; }
+    layersControl = L.control.layers(null, currentOverlayMap(), { collapsed: false }).addTo(map);
+
+    // update button label
+    if (clusterToggleBtn) {
+      clusterToggleBtn.textContent = clusterMode ? "Shrink (Cluster)" : "Expand (Uncluster)";
+      clusterToggleBtn.setAttribute("aria-pressed", String(!clusterMode));
+      clusterToggleBtn.setAttribute("title", clusterMode ? "Switch to unclustered view" : "Switch to clustered view");
+    }
+
+    try { map.invalidateSize(); } catch (_) {}
+  }
+
+  // --- Top-right Cluster Toggle Control ---
+  let clusterToggleBtn = null;
+  const ClusterToggleControl = L.Control.extend({
+    options: { position: 'topright' },
+    onAdd: function () {
+      const btn = L.DomUtil.create('button', 'leaflet-control-cluster-toggle');
+      btn.type = 'button';
+      btn.textContent = clusterMode ? "Shrink (Cluster)" : "Expand (Uncluster)";
+      btn.setAttribute("aria-label", "Toggle clustering");
+      btn.setAttribute("aria-pressed", String(!clusterMode));
+      btn.setAttribute("title", clusterMode ? "Switch to unclustered view" : "Switch to clustered view");
+
+      L.DomEvent.disableClickPropagation(btn);
+      L.DomEvent.on(btn, 'click', function (e) {
+        e.preventDefault();
+        clusterMode = !clusterMode;
+        applyClusterMode();
+      });
+
+      clusterToggleBtn = btn;
+      return btn;
+    }
+  });
+  map.addControl(new ClusterToggleControl());
+
+  // ------------------ Data & Map population ------------------
+  let currentRows = [];
   function addRows(rows) {
     let added = 0;
+
     rows.forEach((r) => {
       const lat = getNumberFromKeys(r, LAT_KEYS);
       const lng = getNumberFromKeys(r, LNG_KEYS);
@@ -479,56 +496,39 @@
       }).bindTooltip(tooltip)
         .bindPopup(popupHTML, { maxWidth: 340 });
 
-      // 🎧 Autoplay + 🖼️ image debug on popup open
+      // Image debug (no audio autoplay)
       marker.on('popupopen', (ev) => {
-        // AUDIO
-        //const audioUrl = normalizeMediaUrl(val(r, "audio_url", "audio"), ".mp3");
-        //if (audioUrl) {
-        //  const player = document.getElementById('dd-audio');
-        //  try {
-        //    if (player.getAttribute('src') !== audioUrl) player.setAttribute('src', audioUrl);
-        //    player.play().catch(() => {});
-        //  } catch (e) { console.warn('Audio play error:', e); }
-        //}
-        // IMAGE
         try {
           const el = ev.popup.getElement && ev.popup.getElement();
           const img = el && el.querySelector && el.querySelector("img.dd-popup-img");
           if (img) {
             const srcShown = img.getAttribute("src");
-            console.log("[img attempt]", srcShown);
-            img.addEventListener("load", () => {
-              console.log("[img loaded]", srcShown);
-              setStatus(`Loaded image: ${srcShown}`);
-            }, { once: true });
-            img.addEventListener("error", () => {
-              console.warn("[img error]", srcShown);
-              setStatus(`Image not found: ${srcShown}`, true);
-            }, { once: true });
-          } else {
-            console.log("[img missing] No image tag for this row");
+            img.addEventListener("load", () => setStatus(`Loaded image: ${srcShown}`), { once: true });
+            img.addEventListener("error", () => setStatus(`Image not found: ${srcShown}`, true), { once: true });
           }
         } catch (e) { console.warn("Image hook error:", e); }
       });
 
       const groupName = pick(r.cluster_group, "Unassigned");
+
+      // clustered
       const clusterLayer = ensureClusterGroup(groupName, color);
       clusterLayer.addLayer(marker);
+
+      // plain (unclustered)
+      const plainLayer = ensurePlainGroup(groupName);
+      plainLayer.addLayer(marker);
+
+      // combined collections
       allLayers.addLayer(marker);
+      allPlain.addLayer(marker);
+
       if (id) markerById.set(String(id), marker);
       added += 1;
     });
 
-    // Add layers & controls
-    const overlays = {};
-    Object.keys(layerGroups).forEach((name) => {
-      if (!map.hasLayer(layerGroups[name])) map.addLayer(layerGroups[name]);
-      overlays[name] = layerGroups[name];
-    });
-    L.control.layers(null, overlays, { collapsed: false }).addTo(map);
-
     if (added > 0) {
-      try { map.fitBounds(allLayers.getBounds(), { padding: [20,20] }); } catch (e) {}
+      try { map.fitBounds(allPlain.getBounds(), { padding: [20,20] }); } catch (e) {}
       try { map.invalidateSize(); } catch (e) {}
       setStatus(`Loaded ${added} markers.`);
     } else {
@@ -548,8 +548,8 @@
         }
         currentRows = results.data;
         buildHierarchy(currentRows);
-        // buildMarkers(currentRows);  // optional first pass if you want
         addRows(currentRows);
+        applyClusterMode(); // build correct layer control & apply current mode
       },
       error: (err) => {
         console.error("CSV parse error:", err);
@@ -572,8 +572,8 @@
         }
         currentRows = results.data;
         buildHierarchy(currentRows);
-        // buildMarkers(currentRows);  // optional
         addRows(currentRows);
+        applyClusterMode(); // build correct layer control & apply current mode
       },
       error: (err) => {
         console.error("CSV parse error:", err);
