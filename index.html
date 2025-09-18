@@ -438,7 +438,7 @@
 
     // rebuild layers control
     if (layersControl) { try { map.removeControl(layersControl); } catch(_) {} layersControl = null; }
-    layersControl = L.control.layers(null, currentOverlayMap(), { collapsed: false }).addTo(map);
+    layersControl = L.control.layers(null, currentOverlayMap(), { collapsed: true }).addTo(map);
 
     // update button label
     if (clusterToggleBtn) {
